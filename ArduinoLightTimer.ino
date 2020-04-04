@@ -2,8 +2,12 @@
 #include <ThreeWire.h>
 #include <RtcDS1302.h>
 
-enum Mode { NORMAL, MENUCLOCK, MENUPROGRAM, SETCLOCK, SELECTPROGRAM, SETPROGRAM };
-enum Buttons { NONE, BUTTON1, BUTTON2, BUTTON3, BUTTON4, BUTTON5 };
+enum Mode { NORMAL, MENUCLOCK, MENUPROGRAM, MENUSENSOR, SETCLOCK, SELECTPROGRAM, SETPROGRAM, SETSENSOR };
+enum Buttons { NONE, BUTTONMENU, BUTTONOK, BUTTONLIGHT, BUTTONPLUS, BUTTONMINUS };
+
+//Time of ligth turned on by switch during sleep time
+//900sec = 15min
+const short switchLightTime = 900;
 
 //Arduino modules pins parameters
 //RealTimeClock DS1302
@@ -15,38 +19,44 @@ const byte RtcReset = 4;
 const byte DisplayData = 6;
 const byte DisplayClock = 5;
 
+//LightSensor
+const byte AnalogLight = A1;
+
+const byte RelayPin = 8;
+
 //Buttons analogue input
 const byte ButtonsPin = A0;
 
 //Buttons input voltage
 const short ButtonsNotPressedStart = 950;
 const short ButtonsNotPressedEnd = 1030;
-const short Button1Start = 0;
-const short Button1End = 20;
-const short Button2Start = 610;
-const short Button2End = 630;
-const short Button3Start = 670;
-const short Button3End = 690;
-const short Button4Start = 700;
-const short Button4End = 712;
-const short Button5Start = 715;
-const short Button5End = 740;
+const short BUTTONMENUStart = 0;
+const short BUTTONMENUEnd = 20;
+const short BUTTONOKStart = 580;
+const short BUTTONOKEnd = 620;
+const short BUTTONLIGHTStart = 640;
+const short BUTTONLIGHTEnd = 679;
+const short BUTTONPLUSStart = 685;
+const short BUTTONPLUSEnd = 709;
+const short BUTTONMINUSStart = 712;
+const short BUTTONMINUSEnd = 740;
 
 Buttons button;
 
 //Whether seconds point is on
 bool pointOn;
 
-//display brightness
-uint8_t brightness = 7;
-
 bool setMinutes;
 bool offMode;
 byte buttonTimer;
+bool lightOn;
+bool sleepMode;
+short switchCountdown;
 
 RtcDateTime setDateTime;
 RtcDateTime setOnDateTime;
 RtcDateTime setOffDateTime;
+byte lightSensorThreshold;
 
 ThreeWire myWire(RtcData, RtcClock, RtcReset);
 RtcDS1302<ThreeWire> RealTimeClock(myWire);
@@ -65,15 +75,15 @@ void setup() {
 
   displayModule.clear();
   displayModule.brightness(7);
-
-  Serial.begin(9600);  
-  setOnDateTime = RtcDateTime(0, 0, 0, RealTimeClock.GetMemory(0), RealTimeClock.GetMemory(1), 0);
-  setOffDateTime = RtcDateTime(0, 0, 0, RealTimeClock.GetMemory(2), RealTimeClock.GetMemory(3), 0);
+  
+  setOnDateTime = RtcDateTime(1, 1, 1, RealTimeClock.GetMemory(0), RealTimeClock.GetMemory(1), 0);
+  setOffDateTime = RtcDateTime(1, 1, 1, RealTimeClock.GetMemory(2), RealTimeClock.GetMemory(3), 0);
+  lightSensorThreshold = RealTimeClock.GetMemory(4);
 }
 
 //Check the button is pressed
 void CheckButtons() {
-  int actualKeyValue = analogRead(ButtonsPin);
+  int actualKeyValue = analogRead(ButtonsPin);  
 
   if (actualKeyValue >= ButtonsNotPressedStart && actualKeyValue <= ButtonsNotPressedEnd) {
     button = NONE;
@@ -81,31 +91,31 @@ void CheckButtons() {
     return;
   }
 
-  if (button != NONE)    {
-    if (buttonTimer < 10)
+  if (button != NONE) {
+    if (buttonTimer < 100)
       buttonTimer++;
 
     return;
   }
 
-  if (actualKeyValue >= Button1Start && actualKeyValue <= Button1End) {
-    button = BUTTON1;
+  if (actualKeyValue >= BUTTONMENUStart && actualKeyValue <= BUTTONMENUEnd) {
+    button = BUTTONMENU;
     return;
   }
-  else if (actualKeyValue >= Button2Start && actualKeyValue <= Button2End) {
-    button = BUTTON2;
+  else if (actualKeyValue >= BUTTONOKStart && actualKeyValue <= BUTTONOKEnd) {
+    button = BUTTONOK;
     return;
   }
-  else if (actualKeyValue >= Button5Start && actualKeyValue <= Button5End) {
-    button = BUTTON5;
+  else if (actualKeyValue >= BUTTONMINUSStart && actualKeyValue <= BUTTONMINUSEnd) {
+    button = BUTTONMINUS;
     return;
   }
-  else if (actualKeyValue >= Button4Start && actualKeyValue <= Button4End) {
-    button = BUTTON4;
+  else if (actualKeyValue >= BUTTONPLUSStart && actualKeyValue <= BUTTONPLUSEnd) {
+    button = BUTTONPLUS;
     return;
   }
-  else if (actualKeyValue >= Button3Start && actualKeyValue <= Button3End) {
-    button = BUTTON3;
+  else if (actualKeyValue >= BUTTONLIGHTStart && actualKeyValue <= BUTTONLIGHTEnd) {
+    button = BUTTONLIGHT;
     return;
   }
 }
@@ -114,7 +124,10 @@ void CheckButtons() {
 void ProcessButtons() {
   switch (button)
   {
-    case BUTTON1:
+    case BUTTONMENU:
+      if (switchCountdown != 0)
+        return;
+      
       switch (deviceMode) {
         case NORMAL:
           deviceMode = MENUCLOCK;
@@ -126,29 +139,37 @@ void ProcessButtons() {
           displayModule.point(false);
           displayModule.displayByte(_N, _P, _O, 0x31);
           break;
-        case SETCLOCK:
-          RealTimeClock.SetDateTime(setDateTime);
+        case MENUPROGRAM:
+          deviceMode = MENUSENSOR;
+          displayModule.displayByte(_C, _E, _H, _C);
+          break;
+        case MENUSENSOR:
           deviceMode = NORMAL;
           LedUpdate();
           break;
-        case MENUPROGRAM:
+        case SETCLOCK:
+          RealTimeClock.SetDateTime(RtcDateTime(1, 1, 1, setDateTime.Hour(), setDateTime.Minute(), 0));          
           deviceMode = NORMAL;
           LedUpdate();
           break;
         case SETPROGRAM:
-          if (offMode){
+          if (offMode) {
             RealTimeClock.SetMemory((uint8_t)2, setOffDateTime.Hour());
             RealTimeClock.SetMemory((uint8_t)3, setOffDateTime.Minute());
-            }            
+          }
           else {
             RealTimeClock.SetMemory((uint8_t)0, setOnDateTime.Hour());
             RealTimeClock.SetMemory((uint8_t)1, setOnDateTime.Minute());
           }
           deviceMode = NORMAL;
           break;
+        case SETSENSOR:
+          RealTimeClock.SetMemory((uint8_t)4, lightSensorThreshold);
+          deviceMode = NORMAL;
+          break;
       }
       break;
-    case BUTTON2:
+    case BUTTONOK:
       switch (deviceMode) {
         case MENUPROGRAM:
           deviceMode = SELECTPROGRAM;
@@ -171,22 +192,32 @@ void ProcessButtons() {
         case MENUCLOCK:
           deviceMode = SETCLOCK;
           displayModule.point(true);
-          setDateTime = RealTimeClock.GetDateTime();
+          setDateTime = RealTimeClock.GetDateTime();          
           displayModule.displayClock(setDateTime.Hour(), setDateTime.Minute());
+          break;
+        case MENUSENSOR:
+          deviceMode = SETSENSOR;
+          break;
       }
       break;
-    case BUTTON4:
-      SetTime(false);
-      LedUpdate();
+    case BUTTONLIGHT:      
+      if (sleepMode && deviceMode == NORMAL) {
+        if (switchCountdown != 0 && switchCountdown != switchLightTime && switchCountdown != switchLightTime * 2) {
+          switchCountdown = 0;
+          return;
+        }
+         
+        switchCountdown = buttonTimer > 30 ? switchLightTime * 2 : switchLightTime;        
+      }      
       break;
-    case BUTTON5:
+    case BUTTONPLUS:
+      SetTime(false);
+      break;
+    case BUTTONMINUS:
       SetTime(true);
-      LedUpdate();
-
       break;
   }
 }
-
 
 void SetTime(bool minus)
 {
@@ -197,13 +228,23 @@ void SetTime(bool minus)
         displayModule.displayByte(_O, _F, _F, _empty);
       else
         displayModule.displayByte(_O, _n, _empty, _empty);
+
+      LedUpdate();
       break;
     case SETCLOCK:
     case SETPROGRAM:
       RtcDateTime *dateTime;
       dateTime = deviceMode == SETCLOCK ? &setDateTime : (offMode ? &setOffDateTime : &setOnDateTime);
       *dateTime += (setMinutes ? (!minus && dateTime->Minute() == 59 || minus && dateTime->Minute() == 00 ? -3540 : 60) : (!minus && dateTime->Hour() == 23 || minus && dateTime->Hour() == 00 ? -82800 : 3600)) * (minus ? -1 : 1);
-      Serial.println(setOnDateTime.TotalSeconds());
+      LedUpdate();
+      break;
+    case SETSENSOR:
+      if (lightSensorThreshold > 0 && minus)
+        lightSensorThreshold--;
+      else if (lightSensorThreshold < 255 && !minus)
+        lightSensorThreshold++;
+
+      LedUpdate();
       break;
   }
 }
@@ -213,22 +254,28 @@ void LedUpdate() {
   pointOn = !pointOn;
   RtcDateTime dateTime = RealTimeClock.GetDateTime();
 
+  if (switchCountdown > 0) {    
+    displayModule.displayClock(switchCountdown / 60, switchCountdown % 60);
+    return;
+  }
+
   switch (deviceMode) {
     case NORMAL:
-      displayModule.point(pointOn);
-      displayModule.brightness(brightness);
+      displayModule.point(pointOn);      
       displayModule.displayClock(dateTime.Hour(), dateTime.Minute());
+      break;
+    case SETSENSOR:
+      displayModule.displayInt(lightSensorThreshold);
       break;
     case SETCLOCK:
     case SETPROGRAM:
       //Выбираем что показывать время включения или время отключения или настройку текущего времени
       RtcDateTime displayDateTime = deviceMode == SETCLOCK ? setDateTime : (dateTime = offMode ? setOffDateTime : setOnDateTime);
 
-      //Отстутствие мигание цифры
+      //Digits blinking
       if (button != NONE || pointOn)
         displayModule.displayClock(displayDateTime.Hour(), displayDateTime.Minute());
       else {
-        //Мигиние цифры
         if (setMinutes) {
           byte firstDigit = displayDateTime.Hour() / 10;
           byte data[4] = {firstDigit == 0 ? (byte)10 : firstDigit, (byte)(displayDateTime.Hour() - firstDigit * 10), 10, 10};
@@ -244,18 +291,50 @@ void LedUpdate() {
   }
 }
 
-//Check timers Fired
-void CheckTimers() {
-  digitalWrite(LED_BUILTIN, HIGH);
-  for (int i = 0; i < 10; i++ ) {
-    //100ms
+void CheckLightTimer() {
+  RtcDateTime currentDateTime = RealTimeClock.GetDateTime();
+
+  if (switchCountdown > 0) {
+    if (!lightOn) {
+      displayModule.point(true);
+      lightOn = true;
+      displayModule.brightness(3);
+      digitalWrite(LED_BUILTIN, HIGH);
+      digitalWrite(RelayPin, HIGH);
+    }
+
+    switchCountdown--;
+    return;
+  }
+
+  sleepMode = (currentDateTime.Hour() > setOffDateTime.Hour() || currentDateTime.Hour() == setOffDateTime.Hour() && currentDateTime.Minute() >= setOffDateTime.Minute()) &&  
+      (currentDateTime.Hour() < setOnDateTime.Hour() || currentDateTime.Hour() == setOnDateTime.Hour() && currentDateTime.Minute() <= setOnDateTime.Minute());
+    
+  //Turning the light on
+  if (!sleepMode && !lightOn && lightSensorThreshold * 4 < analogRead(AnalogLight)) {
+    lightOn = true;
+    displayModule.brightness(3);
+    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(RelayPin, HIGH);
+  }
+
+  //Turning the light off
+  if (lightOn && (lightSensorThreshold * 4 > analogRead(AnalogLight) || sleepMode)) {
+    lightOn = false;
+    displayModule.brightness(sleepMode ? 1 : 7);
+    digitalWrite(LED_BUILTIN, LOW);
+    digitalWrite(RelayPin, LOW);
+  }
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  for (int i = 0; i < 10; i++) {
+    //100ms period
     CheckButtons();
 
     if (buttonTimer == 0 || buttonTimer > 5)
-      ProcessButtons();
-
-    if (button != NONE)
-      Serial.println(button);
+      ProcessButtons();    
 
     if (deviceMode == SETCLOCK && i == 5)
       LedUpdate();
@@ -263,11 +342,7 @@ void CheckTimers() {
     delay(100);
   }
 
-  //1s
+  //1s period
   LedUpdate();
-}
-
-void loop() {
-  // put your main code here, to run repeatedly:
-  CheckTimers();
+  CheckLightTimer();  
 }
