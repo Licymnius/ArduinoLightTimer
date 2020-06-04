@@ -1,6 +1,7 @@
 #include "GyverTM1637.h"
 #include <ThreeWire.h>
 #include <RtcDS1302.h>
+#include "TimeHelper.h"
 
 enum Mode { NORMAL, MENUCLOCK, MENUPROGRAM, MENUSENSOR, SETCLOCK, SELECTPROGRAM, SETPROGRAM, SETSENSOR };
 enum Buttons { NONE, BUTTONMENU, BUTTONOK, BUTTONLIGHT, BUTTONPLUS, BUTTONMINUS };
@@ -66,6 +67,9 @@ Mode deviceMode;
 void setup() {
   // put your setup code here, to run once:
   pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(RelayPin, OUTPUT);
+  // Turn off light by defalut
+  digitalWrite(RelayPin, HIGH);
   RealTimeClock.Begin();
   if (RealTimeClock.GetIsWriteProtected())
     RealTimeClock.SetIsWriteProtected(false);
@@ -82,7 +86,7 @@ void setup() {
 }
 
 //Check the button is pressed
-void CheckButtons() {
+void checkButtons() {
   int actualKeyValue = analogRead(ButtonsPin);  
 
   if (actualKeyValue >= ButtonsNotPressedStart && actualKeyValue <= ButtonsNotPressedEnd) {
@@ -121,7 +125,7 @@ void CheckButtons() {
 }
 
 //Buttons Pressed Hooks
-void ProcessButtons() {
+void processButtons() {
   switch (button)
   {
     case BUTTONMENU:
@@ -132,7 +136,7 @@ void ProcessButtons() {
         case NORMAL:
           deviceMode = MENUCLOCK;
           displayModule.point(false);
-          displayModule.displayByte(_4, _A, _C, 0x7e);
+          displayModule.displayByte(_4, _A, _C, 0x7e);          
           break;
         case MENUCLOCK:
           deviceMode = MENUPROGRAM;
@@ -145,12 +149,12 @@ void ProcessButtons() {
           break;
         case MENUSENSOR:
           deviceMode = NORMAL;
-          LedUpdate();
+          ledUpdate();
           break;
         case SETCLOCK:
           RealTimeClock.SetDateTime(RtcDateTime(1, 1, 1, setDateTime.Hour(), setDateTime.Minute(), 0));          
           deviceMode = NORMAL;
-          LedUpdate();
+          ledUpdate();
           break;
         case SETPROGRAM:
           if (offMode) {
@@ -161,7 +165,8 @@ void ProcessButtons() {
             RealTimeClock.SetMemory((uint8_t)0, setOnDateTime.Hour());
             RealTimeClock.SetMemory((uint8_t)1, setOnDateTime.Minute());
           }
-          deviceMode = NORMAL;
+          offMode = false;          
+          deviceMode = NORMAL;          
           break;
         case SETSENSOR:
           RealTimeClock.SetMemory((uint8_t)4, lightSensorThreshold);
@@ -211,15 +216,15 @@ void ProcessButtons() {
       }      
       break;
     case BUTTONPLUS:
-      SetTime(false);
+      setTime(false);
       break;
     case BUTTONMINUS:
-      SetTime(true);
+      setTime(true);
       break;
   }
 }
 
-void SetTime(bool minus)
+void setTime(bool minus)
 {
   switch (deviceMode) {
     case SELECTPROGRAM:
@@ -229,14 +234,15 @@ void SetTime(bool minus)
       else
         displayModule.displayByte(_O, _n, _empty, _empty);
 
-      LedUpdate();
+      ledUpdate();
       break;
     case SETCLOCK:
     case SETPROGRAM:
       RtcDateTime *dateTime;
       dateTime = deviceMode == SETCLOCK ? &setDateTime : (offMode ? &setOffDateTime : &setOnDateTime);
-      *dateTime += (setMinutes ? (!minus && dateTime->Minute() == 59 || minus && dateTime->Minute() == 00 ? -3540 : 60) : (!minus && dateTime->Hour() == 23 || minus && dateTime->Hour() == 00 ? -82800 : 3600)) * (minus ? -1 : 1);
-      LedUpdate();
+      *dateTime += (setMinutes ? (!minus && dateTime->Minute() == 59 || minus && dateTime->Minute() == 00 ? -3540 : 60) : 
+        (!minus && dateTime->Hour() == 23 || minus && dateTime->Hour() == 00 ? -82800 : 3600)) * (minus ? -1 : 1);
+      ledUpdate();
       break;
     case SETSENSOR:
       if (lightSensorThreshold > 0 && minus)
@@ -244,13 +250,13 @@ void SetTime(bool minus)
       else if (lightSensorThreshold < 255 && !minus)
         lightSensorThreshold++;
 
-      LedUpdate();
+      ledUpdate();
       break;
   }
 }
 
 //Update Led Indicator Data
-void LedUpdate() {
+void ledUpdate() {
   pointOn = !pointOn;
   RtcDateTime dateTime = RealTimeClock.GetDateTime();
 
@@ -291,7 +297,7 @@ void LedUpdate() {
   }
 }
 
-void CheckLightTimer() {
+void checkLightTimer() {
   RtcDateTime currentDateTime = RealTimeClock.GetDateTime();
 
   if (switchCountdown > 0) {
@@ -300,30 +306,31 @@ void CheckLightTimer() {
       lightOn = true;
       displayModule.brightness(3);
       digitalWrite(LED_BUILTIN, HIGH);
-      digitalWrite(RelayPin, HIGH);
+      digitalWrite(RelayPin, LOW);
     }
 
     switchCountdown--;
     return;
   }
 
-  sleepMode = (currentDateTime.Hour() > setOffDateTime.Hour() || currentDateTime.Hour() == setOffDateTime.Hour() && currentDateTime.Minute() >= setOffDateTime.Minute()) &&  
-      (currentDateTime.Hour() < setOnDateTime.Hour() || currentDateTime.Hour() == setOnDateTime.Hour() && currentDateTime.Minute() <= setOnDateTime.Minute());
+  sleepMode = setOffDateTime > setOnDateTime 
+    ? currentDateTime >= setOffDateTime || currentDateTime < setOnDateTime 
+    : currentDateTime >= setOffDateTime && currentDateTime < setOnDateTime;
     
   //Turning the light on
   if (!sleepMode && !lightOn && lightSensorThreshold * 4 < analogRead(AnalogLight)) {
     lightOn = true;
     displayModule.brightness(3);
     digitalWrite(LED_BUILTIN, HIGH);
-    digitalWrite(RelayPin, HIGH);
+    digitalWrite(RelayPin, LOW);
   }
 
-  //Turning the light off
-  if (lightOn && (lightSensorThreshold * 4 > analogRead(AnalogLight) || sleepMode)) {
+  //Turning the light off (sensitivity is 10 units smaller to avoid blinking)
+  if (lightOn && ((lightSensorThreshold - 10) * 4 > analogRead(AnalogLight) || sleepMode)) {
     lightOn = false;
     displayModule.brightness(sleepMode ? 1 : 7);
     digitalWrite(LED_BUILTIN, LOW);
-    digitalWrite(RelayPin, LOW);
+    digitalWrite(RelayPin, HIGH);
   }
 }
 
@@ -331,18 +338,18 @@ void loop() {
   // put your main code here, to run repeatedly:
   for (int i = 0; i < 10; i++) {
     //100ms period
-    CheckButtons();
+    checkButtons();
 
     if (buttonTimer == 0 || buttonTimer > 5)
-      ProcessButtons();    
+      processButtons();    
 
     if (deviceMode == SETCLOCK && i == 5)
-      LedUpdate();
+      ledUpdate();
 
     delay(100);
   }
 
   //1s period
-  LedUpdate();
-  CheckLightTimer();  
+  ledUpdate();
+  checkLightTimer();  
 }
